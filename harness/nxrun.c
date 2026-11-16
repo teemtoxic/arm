@@ -539,7 +539,11 @@ int main(int argc, char **argv) {
             fclose(tf);
         }
         fprintf(stderr, "NXRUN_TRAP: nx_decrypt=%p base=%p\n", (void *)fn, (void *)base);
-        *(volatile int *)0 = 1;   /* SIGSEGV with the stack live */
+        if (getenv("NXRUN_STOP")) {
+            raise(SIGSTOP);       /* gdb: set breakpoints, then signal SIGCONT */
+        } else {
+            *(volatile int *)0 = 1;   /* SIGSEGV with the stack live */
+        }
     }
     fprintf(stderr, "calling nx_decrypt...\n");
     /* DWARF from the arm64 build:

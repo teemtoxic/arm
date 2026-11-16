@@ -170,24 +170,26 @@ jobs:
           echo "=== payload ==="
           ls -l payload.bin 2>/dev/null && xxd -l 64 payload.bin
           echo "=== gdb: capture key/iv exactly where they are built ==="
-          cat > /tmp/gd.gdb <<'EOC'
+          cat > /tmp/ge.gdb <<'EOC'
           set pagination off
           set confirm off
           set disable-randomization on
-          set breakpoint pending on
-          handle SIGSEGV nostop noprint pass
-          break nx_decrypt
+          handle SIGSEGV stop print nopass
+          handle SIGSTOP stop print nopass
           run
           python
           import gdb
-          fn = int(gdb.parse_and_eval("(unsigned long)nx_decrypt"))
+          try:
+              fn = int(gdb.parse_and_eval("(unsigned long)nx_decrypt"))
+          except gdb.error:
+              fn = None
+          if fn is None:
+              fn, base = [int(x,16) for x in open("nxaddr.txt").read().split()]
           print("nx_decrypt = 0x%x" % fn)
-          gdb.execute("delete")
-          gdb.execute("handle SIGSEGV stop print nopass")
-          # 0x1ede8 stores key/iv; 0x1edb8 stores the iv
-          for d in (0x3ac, 0x37c, 0x360, 0x3c0):
+          for d in (0x3ac, 0x37c, 0x340):
               gdb.execute("break *0x%x" % (fn + d))
           inf = gdb.selected_inferior()
+          gdb.execute("signal SIGCONT")
           for step in range(5):
               try: gdb.execute("continue")
               except gdb.error as e:
@@ -198,16 +200,16 @@ jobs:
               off = pc - fn
               sp = int(gdb.parse_and_eval("$sp"))
               print("HIT +0x%x  sp=0x%x" % (off, sp))
-              for base, n, label in ((0x80, 48, "k-slices"), (0x90, 48, "key"),
-                                     (0x110, 48, "iv-slot"), (0x130, 64, "ks/roundkeys")):
+              for base_off, n, label in ((0x80, 48, "k-slices"), (0x90, 48, "key"),
+                                         (0x110, 48, "iv-slot"), (0x130, 64, "ks")):
                   try:
-                      b = bytes(inf.read_memory(sp+base, n))
-                      print("   sp+0x%03x %-12s %s" % (base, label, b.hex()))
-                  except Exception as e:
-                      print("   sp+0x%03x %-12s ERR" % (base, label))
+                      b = bytes(inf.read_memory(sp+base_off, n))
+                      print("   sp+0x%03x %-10s %s" % (base_off, label, b.hex()))
+                  except Exception:
+                      print("   sp+0x%03x %-10s ERR" % (base_off, label))
           end
           EOC
-          NXRUN_TRAP=1 gdb -batch -nx -x /tmp/gd.gdb \
+          NXRUN_TRAP=1 NXRUN_STOP=1 gdb -batch -nx -x /tmp/ge.gdb \
               --args harness/nxrun input/libondevx.so input/k input/p \
                      input/cert.der payload.bin "0x1ea3c" 2>&1 | tail -40 || true
 
