@@ -184,6 +184,9 @@ jobs:
                               ("loopend0x1f4d4", 0xa98)):
               print("  bp %-16s -> 0x%x" % (name, fn + delta))
               gdb.execute("break *0x%x" % (fn + delta))
+          # step off the SIGSEGV trap inside main() first
+          gdb.execute("tbreak *0x%x" % (int(gdb.parse_and_eval("$pc")) + 4))
+          gdb.execute("continue")
           gdb.execute("continue")
           inf = gdb.selected_inferior()
           pc = int(gdb.parse_and_eval("$pc"))
