@@ -169,8 +169,8 @@ jobs:
           echo "rc=$rc"
           echo "=== payload ==="
           ls -l payload.bin 2>/dev/null && xxd -l 64 payload.bin
-          echo "=== gdb: dump the plaintext straight out of nx_decrypt ==="
-          cat > /tmp/g5.gdb <<'EOC'
+          echo "=== gdb: scan for the plaintext buffer ==="
+          cat > /tmp/g6.gdb <<'EOC'
           set pagination off
           set confirm off
           handle SIGSEGV stop print nopass
@@ -179,36 +179,49 @@ jobs:
           import gdb
           fn, base = [int(x,16) for x in open("nxaddr.txt").read().split()]
           gdb.execute("delete")
-          # 0x1f4d4 sits right after the whole decrypt loop, before PKCS#7 unpad
-          gdb.execute("break *0x%x" % (fn + 0x498))     # 0x1f4d4
+          gdb.execute("break *0x%x" % (fn + 0x498))     # after the decrypt loop
           gdb.execute("continue")
-          sp = int(gdb.parse_and_eval("$sp"))
+          sp  = int(gdb.parse_and_eval("$sp"))
           inf = gdb.selected_inferior()
           print("sp = 0x%x" % sp)
-          # [sp+0x100] = plain.begin, [sp+0x108] = plain.end
-          beg = int.from_bytes(bytes(inf.read_memory(sp+0x100, 8)), 'little')
-          end = int.from_bytes(bytes(inf.read_memory(sp+0x108, 8)), 'little')
-          print("plain.begin = 0x%x  plain.end = 0x%x  len = %d" % (beg, end, end-beg))
-          if 0 < end-beg < 64*1024*1024:
-              n = end - beg
-              data = bytes(inf.read_memory(beg, n))
-              open("payload.bin","wb").write(data)
-              print("wrote payload.bin %d bytes" % n)
-              print("head:", data[:64].hex())
-              print("ascii:", data[:16])
-          else:
-              # fall back to guessing from the registers
-              for label, addr in (("x21", int(gdb.parse_and_eval("$x21"))),
-                                  ("x20", int(gdb.parse_and_eval("$x20")))):
-                  b = bytes(inf.read_memory(addr, 64))
-                  print("%s @0x%x = %s" % (label, addr, b.hex()))
+          # 1) every 8-byte word on the frame that looks like a heap pointer
+          print("== frame words that decode to plausible buffers ==")
+          for off in range(0, 0x240, 8):
+              try:
+                  v = int.from_bytes(bytes(inf.read_memory(sp+off, 8)), 'little')
+              except Exception:
+                  continue
+              if 0xaaaa00000000 <= v <= 0xaaaaffffffff or 0xffff00000000 <= v <= 0xffffffffffff:
+                  try:
+                      head = bytes(inf.read_memory(v, 16))
+                  except Exception:
+                      continue
+                  if head[:4] in (b'ODEX', b'dex\n') or head.count(0) < 8:
+                      print("  sp+0x%03x -> 0x%x  %s" % (off, v, head.hex()))
+          # 2) brute: walk every plausible buffer and look for ODEX/dex\n035
+          print("== scanning candidate heap pointers for ODEX / dex035 ==")
+          seen = set()
+          for off in range(0, 0x240, 8):
+              try:
+                  v = int.from_bytes(bytes(inf.read_memory(sp+off, 8)), 'little')
+              except Exception:
+                  continue
+              if v in seen or not (0x1000000 <= v < 0x10000000000):
+                  continue
+              seen.add(v)
+              try:
+                  head = bytes(inf.read_memory(v, 8))
+              except Exception:
+                  continue
+              if head[:4] == b'ODEX':
+                  print("  *** ODEX at 0x%x (sp+0x%03x) ***" % (v, off))
+              elif head[:4] == b'dex\n':
+                  print("  *** dex\n at 0x%x (sp+0x%03x) ***" % (v, off))
           end
           EOC
-          NXRUN_TRAP=1 gdb -batch -nx -x /tmp/g5.gdb \
+          NXRUN_TRAP=1 gdb -batch -nx -x /tmp/g6.gdb \
               --args harness/nxrun input/libondevx.so input/k input/p \
-                     input/cert.der payload.bin "0x1ea3c" 2>&1 | tail -25 || true
-          echo "--- payload.bin after gdb ---"
-          ls -l payload.bin 2>/dev/null && xxd -l 64 payload.bin
+                     input/cert.der payload.bin "0x1ea3c" 2>&1 | tail -40 || true
 
           echo "=== gdb backtrace of nxrun ==="
           sudo apt-get install -y -qq gdb >/dev/null 2>&1 || true
