@@ -137,7 +137,7 @@ jobs:
               if k < len(d) and d[k] == 0x30:
                   found.append((a, ln, j))
           print('candidates:', [(hex(a), l) for a, l, _ in found])
-          a, ln, j = found[-1]
+          a, ln, j = max(found, key=lambda t: t[1])   # the real cert is the longest match
           blob = d[a:j+ln]
           print('picked offset', hex(a), 'len', len(blob))
           open('input/cert.der','wb').write(blob)
