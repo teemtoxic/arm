@@ -169,49 +169,48 @@ jobs:
           echo "rc=$rc"
           echo "=== payload ==="
           ls -l payload.bin 2>/dev/null && xxd -l 64 payload.bin
-          echo "=== gdb: capture key/iv exactly where they are built ==="
-          cat > /tmp/ge.gdb <<'EOC'
+          echo "=== gdb: dump the real plaintext vector [sp+0xb8] ==="
+          cat > /tmp/gf.gdb <<'EOC'
           set pagination off
           set confirm off
-          set disable-randomization on
           handle SIGSEGV stop print nopass
           handle SIGSTOP stop print nopass
           run
           python
           import gdb
-          try:
-              fn = int(gdb.parse_and_eval("(unsigned long)nx_decrypt"))
-          except gdb.error:
-              fn = None
-          if fn is None:
-              fn, base = [int(x,16) for x in open("nxaddr.txt").read().split()]
+          fn = int(gdb.parse_and_eval("(unsigned long)nx_decrypt"))
           print("nx_decrypt = 0x%x" % fn)
-          for d in (0x1fc, 0x200, 0x3a0, 0x3ac):
-              gdb.execute("break *0x%x" % (fn + d))
-          inf = gdb.selected_inferior()
+          gdb.execute("break *0x%x" % (fn + 0xa98))
           gdb.execute("signal SIGCONT")
-          for step in range(5):
-              try: gdb.execute("continue")
-              except gdb.error as e:
-                  print("stop: %s" % e); break
-              try: pc = int(gdb.parse_and_eval("$pc"))
-              except gdb.error:
-                  print("program gone"); break
-              off = pc - fn
-              sp = int(gdb.parse_and_eval("$sp"))
-              print("HIT +0x%x  sp=0x%x" % (off, sp))
-              for base_off, n, label in ((0x80, 48, "k-slices"), (0x90, 48, "key"),
-                                         (0x110, 48, "iv-slot"), (0x130, 64, "ks")):
-                  try:
-                      b = bytes(inf.read_memory(sp+base_off, n))
-                      print("   sp+0x%03x %-10s %s" % (base_off, label, b.hex()))
-                  except Exception:
-                      print("   sp+0x%03x %-10s ERR" % (base_off, label))
+          inf = gdb.selected_inferior()
+          def rd(a,n):
+              try: return bytes(inf.read_memory(a,n))
+              except Exception: return None
+          gdb.execute("continue")
+          sp = int(gdb.parse_and_eval("$sp"))
+          print("HIT sp=0x%x" % sp)
+          for base in (0xb8, 0xc0, 0xc8, 0xd0, 0xd8, 0xe8, 0xf8, 0x100, 0x108):
+              v = rd(sp+base, 8)
+              if not v: continue
+              val = int.from_bytes(v,'little')
+              head = rd(val, 16) if 0x1000000 <= val < 0x10000000000 else None
+              print("  sp+0x%03x = 0x%x %s" % (base, val, head.hex() if head else ""))
+          # the vector at 0xb8: begin/end/cap
+          b = rd(sp+0xb8, 24)
+          if b:
+              beg, end, cap = (int.from_bytes(b[i:i+8],'little') for i in (0,8,16))
+              print("vector@0xb8 begin=0x%x end=0x%x cap=0x%x len=%d" % (beg,end,cap,end-beg))
+              if 0 < end-beg < 64*1024*1024:
+                  data = rd(beg, end-beg)
+                  if data:
+                      open("payload.bin","wb").write(data)
+                      print("WROTE payload.bin %d head=%s" % (len(data), data[:32].hex()))
           end
           EOC
-          NXRUN_TRAP=1 NXRUN_STOP=1 gdb -batch -nx -x /tmp/ge.gdb \
+          NXRUN_TRAP=1 NXRUN_STOP=1 gdb -batch -nx -x /tmp/gf.gdb \
               --args harness/nxrun input/libondevx.so input/k input/p \
-                     input/cert.der payload.bin "0x1ea3c" 2>&1 | tail -40 || true
+                     input/cert.der payload.bin "0x1ea3c" 2>&1 | tail -20 || true
+          ls -l payload.bin 2>/dev/null && xxd -l 48 payload.bin
 
           echo "=== gdb backtrace of nxrun ==="
           sudo apt-get install -y -qq gdb >/dev/null 2>&1 || true
