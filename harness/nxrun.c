@@ -308,8 +308,9 @@ static FakeObj *obj_new(int kind) {
 
 static jsize f_GetArrayLength(JNIEnv *e, jarray a) {
     FakeObj *o = (FakeObj *)a;
-    if (!o) return 0;
-    return (jsize)o->len;
+    jsize n = o ? (jsize)o->len : 0;
+    fprintf(stderr, "   GetArrayLength(kind=%d) = %d\n", o ? o->kind : -1, (int)n);
+    return n;
 }
 
 static void f_GetByteArrayRegion(JNIEnv *e, jbyteArray a, jsize start, jsize len, jbyte *buf) {
