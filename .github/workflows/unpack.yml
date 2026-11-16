@@ -186,7 +186,7 @@ jobs:
           if fn is None:
               fn, base = [int(x,16) for x in open("nxaddr.txt").read().split()]
           print("nx_decrypt = 0x%x" % fn)
-          for d in (0x3ac, 0x37c, 0x340):
+          for d in (0x1fc, 0x200, 0x3a0, 0x3ac):
               gdb.execute("break *0x%x" % (fn + d))
           inf = gdb.selected_inferior()
           gdb.execute("signal SIGCONT")
