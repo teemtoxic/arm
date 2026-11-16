@@ -1,0 +1,157 @@
+name: nmms-unpack
+
+# Runs natively on GitHub's free aarch64 runner (ubuntu-24.04-arm).
+# Inputs live in input/ (extracted from the APK, not the whole 143 MB apk):
+#   input/libondevx.so   lib/arm64-v8a/libondevx.so
+#   input/k              assets/ondev/k        (69 bytes, "OKDF"+flag+64)
+#   input/p              assets/ondev/p        (22,242,864 bytes ciphertext)
+#   input/CERT.RSA       META-INF/CERT.RSA
+#
+# Output artifact: nmms-decrypted { payload.bin, classes*.dex, run.log }
+
+on:
+  workflow_dispatch:
+    inputs:
+      nx_offset:
+        description: "nx_decrypt offset inside libondevx.so"
+        required: false
+        default: "0x1ea3c"
+  push:
+    paths:
+      - "input/**"
+      - "harness/**"
+      - ".github/workflows/unpack.yml"
+
+jobs:
+  unpack:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Runner info
+        run: |
+          uname -a
+          lscpu | head -8
+
+      - name: Toolchain check
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq file binutils xxd
+          cc --version | head -1
+
+      - name: Input check
+        run: |
+          ls -l input/
+          file input/libondevx.so
+          echo "--- k ---";  xxd input/k
+          echo "--- p head ---"; xxd -l 32 input/p
+
+      - name: Build liblog shim + harness
+        run: |
+          set -e
+          # libondevx.so links against Android's liblog.so; Linux has none.
+          # Provide a stub so dlopen() succeeds.
+          cat > harness/logshim.c <<'EOC'
+          #include <stdarg.h>
+          #include <stdio.h>
+          int __android_log_print(int prio, const char *tag, const char *fmt, ...) {
+              va_list ap; va_start(ap, fmt);
+              fprintf(stderr, "[log] %s: ", tag ? tag : "?");
+              vfprintf(stderr, fmt, ap); fputc('\n', stderr);
+              va_end(ap); return 0;
+          }
+          int __android_log_write(int prio, const char *tag, const char *msg) {
+              fprintf(stderr, "[log] %s: %s\n", tag ? tag : "?", msg ? msg : ""); return 0;
+          }
+          int __android_log_vprint(int prio, const char *tag, const char *fmt, va_list ap) { return 0; }
+          int __android_log_assert(const char *cond, const char *tag, const char *fmt, ...) { return 0; }
+          EOC
+          cc -shared -fPIC -o harness/liblog.so harness/logshim.c
+          # Also expose it as libdl.so / libm.so are real on Linux — nothing to do.
+          cc -O2 -g -Wall -o harness/nxrun harness/nxrun.c -ldl
+          file harness/nxrun harness/liblog.so
+
+      - name: Show recoverable symbols
+        run: |
+          nm -C --defined-only input/libondevx.so 2>/dev/null \
+            | grep -iE "nx_decrypt|nx_inspect|nx_watch|nx_scrub|hkdf|aes_cbc|decrypt_block" || true
+
+      - name: Run nx_decrypt
+        id: run
+        continue-on-error: true
+        run: |
+          set +e
+          export LD_LIBRARY_PATH="$PWD/harness:$LD_LIBRARY_PATH"
+          harness/nxrun \
+            input/libondevx.so \
+            input/k \
+            input/p \
+            input/CERT.RSA \
+            payload.bin \
+            "${{ inputs.nx_offset || '0x1ea3c' }}" \
+            2>&1 | tee run.log
+          rc=${PIPESTATUS[0]}
+          echo "rc=$rc"
+          echo "=== payload ==="
+          ls -l payload.bin 2>/dev/null && xxd -l 64 payload.bin
+          exit $rc
+
+      - name: Carve DEX
+        id: carve
+        if: steps.run.outcome == 'success'
+        continue-on-error: true
+        run: |
+          set -e
+          mkdir -p out
+          python3 - <<'PY'
+          import struct, os
+
+          data = open('payload.bin','rb').read()
+          print('payload', len(data), 'bytes; magic', data[:8])
+
+          if data[:4] == b'ODEX':
+              count = struct.unpack_from('<H', data, 4)[0]
+              print('dex count =', count)
+              pos = 6
+              for i in range(count):
+                  nl = data[pos]; pos += 1
+                  name = data[pos:pos+nl].decode('utf-8','replace'); pos += nl
+                  off, ln = struct.unpack_from('<II', data, pos); pos += 8
+                  print(f'  [{i}] name={name!r} off={off} len={ln} magic={data[off:off+8]!r}')
+                  out = 'out/' + (name if name.endswith('.dex') else f'classes{i}.dex')
+                  os.makedirs(os.path.dirname(out) or '.', exist_ok=True)
+                  open(out,'wb').write(data[off:off+ln])
+          else:
+              # carve any embedded dex
+              n = 0; i = 0
+              while True:
+                  i = data.find(b'dex\n035', i)
+                  if i < 0: break
+                  print('dex magic at', i)
+                  open(f'out/classes{n}.dex','wb').write(data[i:])
+                  n += 1; i += 8
+              print('carved', n)
+          PY
+          ls -l out/ || true
+
+      - name: Diagnose on failure
+        if: steps.run.outcome != 'success'
+        run: |
+          echo "=== tail of run.log ==="
+          tail -50 run.log || true
+          echo "=== .text / .data range (to sanity-check the offset) ==="
+          readelf -SW input/libondevx.so | grep -E "\.text|\.data|\.bss"
+
+      - name: Upload
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nmms-decrypted
+          path: |
+            out/
+            payload.bin
+            run.log
+          if-no-files-found: warn
+          retention-days: 7

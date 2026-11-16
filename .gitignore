@@ -1,0 +1,6 @@
+out/
+payload.bin
+run.log
+harness/nxrun
+harness/*.o
+harness/*.so
