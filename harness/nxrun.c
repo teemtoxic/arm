@@ -316,6 +316,13 @@ static jsize f_GetArrayLength(JNIEnv *e, jarray a) {
 
 static void f_GetByteArrayRegion(JNIEnv *e, jbyteArray a, jsize start, jsize len, jbyte *buf) {
     FakeObj *o = (FakeObj *)a;
+    if (len >= 1024)
+        fprintf(stderr, "   [p-head] %02x%02x%02x%02x %02x%02x%02x%02x (kind=%d len=%d)'+NL+'",
+                ((uint8_t*)o->data)[0], ((uint8_t*)o->data)[1],
+                ((uint8_t*)o->data)[2], ((uint8_t*)o->data)[3],
+                ((uint8_t*)o->data)[4], ((uint8_t*)o->data)[5],
+                ((uint8_t*)o->data)[6], ((uint8_t*)o->data)[7],
+                o->kind, len);
     fprintf(stderr, "   GetByteArrayRegion(kind=%d,start=%d,len=%d)\n", o ? o->kind : -1, start, len);
     if (!o || !o->data) return;
     if (start + len > (jsize)o->len) return;
