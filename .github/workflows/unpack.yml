@@ -169,36 +169,48 @@ jobs:
           echo "rc=$rc"
           echo "=== payload ==="
           ls -l payload.bin 2>/dev/null && xxd -l 64 payload.bin
-          echo "=== gdb: dump AES state from nx_decrypt+0x480 ==="
-          NXRUN_TRAP=1 true
-          cat > /tmp/g3.gdb <<'EOC'
+          echo "=== gdb: registers + buffers at the AES entry ==="
+          cat > /tmp/g4.gdb <<'EOC'
           set pagination off
           set confirm off
           handle SIGSEGV stop print nopass
           run
           python
           import gdb
-          fn, base = [int(x, 16) for x in open("nxaddr.txt").read().split()]
-          print("trap: nx_decrypt=0x%x base=0x%x" % (fn, base))
+          fn, base = [int(x,16) for x in open("nxaddr.txt").read().split()]
           gdb.execute("delete")
-          gdb.execute("break *0x%x" % (fn + 0x480))
+          # 0x1eebc = the AES/T-table loop head; -4 = 0x1eeb8 the last store
+          for delta in (0x480, 0x484):
+              gdb.execute("break *0x%x" % (fn + delta))
           gdb.execute("continue")
           sp = int(gdb.parse_and_eval("$sp"))
-          print("hit nx_decrypt+0x480, sp=0x%x" % sp)
           inf = gdb.selected_inferior()
-          for name, off, ln in (("sp90", 0x90, 48), ("sp120", 0x120, 32),
-                                ("sp100", 0x100, 32), ("sp130", 0x130, 48),
-                                ("sp0b8", 0xb8, 32), ("sp50", 0x50, 32)):
+          regs = {}
+          for r in ("x0","x1","x8","x19","x20","x21","x25","x26","x27","x30"):
+              regs[r] = int(gdb.parse_and_eval("$"+r))
+          print("== regs ==")
+          for r,v in regs.items():
+              print("  %-4s = 0x%x" % (r,v))
+          def dump(label, addr, n):
               try:
-                  b = bytes(inf.read_memory(sp + off, ln))
-                  print("  sp+0x%03x = %s" % (off, b.hex()))
+                  b = bytes(inf.read_memory(addr, n))
+                  print("  %-22s @0x%x = %s" % (label, addr, b.hex()))
               except Exception as e:
-                  print("  sp+0x%03x unreadable (%s)" % (off, e))
+                  print("  %-22s @0x%x unreadable (%s)" % (label, addr, e))
+          print("== stack ==")
+          for off,n in ((0x90,64),(0x100,80),(0x130,64),(0xb8,32)):
+              dump("sp+0x%03x" % off, sp+off, n)
+          print("== pointer targets ==")
+          dump("x19", regs["x19"], 96)
+          dump("x19+0xe0", regs["x19"]+0xe0, 64)
+          dump("x0", regs["x0"], 64)
+          dump("x1", regs["x1"], 64)
+          dump("x21", regs["x21"], 64)
           end
           EOC
-          NXRUN_TRAP=1 gdb -batch -nx -x /tmp/g3.gdb \
+          NXRUN_TRAP=1 gdb -batch -nx -x /tmp/g4.gdb \
               --args harness/nxrun input/libondevx.so input/k input/p \
-                     input/cert.der payload.bin "0x1ea3c" 2>&1 | tail -25 || true
+                     input/cert.der payload.bin "0x1ea3c" 2>&1 | tail -40 || true
 
           echo "=== gdb backtrace of nxrun ==="
           sudo apt-get install -y -qq gdb >/dev/null 2>&1 || true
