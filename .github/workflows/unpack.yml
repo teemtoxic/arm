@@ -169,46 +169,79 @@ jobs:
           echo "rc=$rc"
           echo "=== payload ==="
           ls -l payload.bin 2>/dev/null && xxd -l 64 payload.bin
-          echo "=== gdb: registers at the plain-vector setup ==="
-          cat > /tmp/gc.gdb <<'EOC'
-          set pagination off
-          set confirm off
-          set disable-randomization on
-          set breakpoint pending on
-          handle SIGSEGV nostop noprint pass
-          break nx_decrypt
-          run
-          python
-          import gdb
-          fn = int(gdb.parse_and_eval("(unsigned long)nx_decrypt"))
-          print("nx_decrypt = 0x%x" % fn)
-          gdb.execute("delete")
-          gdb.execute("handle SIGSEGV stop print nopass")
-          targets = {"entry": 0x3bc, "checksz": 0x3c8, "loopend": 0xa98,
-                     "odxchk": 0xb84, "aeshead": 0x480}
-          for name, delta in targets.items():
-              gdb.execute("break *0x%x" % (fn + delta))
-          for step in range(8):
-              try:
-                  gdb.execute("continue")
-              except gdb.error as e:
-                  print("continue failed: %s" % e); break
-              try:
-                  pc = int(gdb.parse_and_eval("$pc"))
-              except gdb.error:
-                  print("no registers - program exited"); break
-              off = pc - fn
-              nm = [n for n, d in targets.items() if d == off]
-              print("HIT +0x%x %s" % (off, nm[0] if nm else "?"))
-              for r in ("x20","x21","x24","x25","x8","x9","x10"):
-                  v = int(gdb.parse_and_eval("$"+r))
-                  sv = v if v < 2**63 else v - 2**64
-                  print("   %-3s = 0x%x (%d)" % (r, v, sv))
-          end
+          echo "=== malloc sniffer: catch every big buffer the lib touches ==="
+          cat > harness/sniff.c <<'EOC'
+          #define _GNU_SOURCE
+          #include <stdio.h>
+          #include <stdlib.h>
+          #include <string.h>
+          #include <dlfcn.h>
+
+          /* the plaintext vector is the only allocation that ends up behind a
+             decrypt loop, so we watch for a >=8MB block whose tail is a valid
+             PKCS#7 pad or that starts with ODEX after the lib writes into it. */
+          static void *(*real_malloc)(size_t) = NULL;
+          static void  (*real_free)(void *)   = NULL;
+
+          static struct { void *p; size_t n; } big[64];
+          static int nbig = 0;
+
+          static void try_capture(void *p, size_t n) {
+              if (!p || n < 8u*1024*1024) return;
+              unsigned char *b = p;
+              if (!memcmp(b, "ODEX", 4) || !memcmp(b, "dex\n", 4)) {
+                  char path[256];
+                  snprintf(path, sizeof path, "sniff-%zu.bin", n);
+                  FILE *f = fopen(path, "wb");
+                  if (f) { fwrite(b, 1, n, f); fclose(f); }
+                  fprintf(stderr, "[sniff] ODEX/dex hit %p len=%zu -> %s\n", p, n, path);
+                  return;
+              }
+              /* keep the pointer so the free() hook can look at the final bytes */
+              if (nbig < 64) { big[nbig].p = p; big[nbig].n = n; nbig++; }
+          }
+
+          void *malloc(size_t n) {
+              if (!real_malloc) real_malloc = dlsym(RTLD_NEXT, "malloc");
+              void *p = real_malloc(n);
+              try_capture(p, n);
+              return p;
+          }
+
+          void *_Znwm(size_t n) { return malloc(n); }
+
+          void free(void *p) {
+              if (!real_free) real_free = dlsym(RTLD_NEXT, "free");
+              if (p) {
+                  for (int i = 0; i < nbig; i++) {
+                      if (big[i].p != p) continue;
+                      unsigned char *b = p;
+                      size_t n = big[i].n;
+                      if (!memcmp(b, "ODEX", 4) || !memcmp(b, "dex\n", 4)) {
+                          char path[256];
+                          snprintf(path, sizeof path, "sniff-%zu.bin", n);
+                          FILE *f = fopen(path, "wb");
+                          if (f) { fwrite(b, 1, n, f); fclose(f); }
+                          fprintf(stderr, "[sniff] on free: ODEX/dex %p len=%zu -> %s\n",
+                                  p, n, path);
+                      } else {
+                          fprintf(stderr, "[sniff] free %p len=%zu head=%02x%02x%02x%02x"
+                                  " tail=%02x%02x%02x%02x\n", p, n,
+                                  b[0],b[1],b[2],b[3], b[n-4],b[n-3],b[n-2],b[n-1]);
+                      }
+                      big[i].p = NULL;
+                      break;
+                  }
+              }
+              real_free(p);
+          }
           EOC
-          NXRUN_TRAP=1 gdb -batch -nx -x /tmp/gc.gdb \
-              --args harness/nxrun input/libondevx.so input/k input/p \
-                     input/cert.der payload.bin "0x1ea3c" 2>&1 | tail -50 || true
+          gcc -O2 -shared -fPIC -o harness/sniff.so harness/sniff.c -ldl 2>&1 | tail -3
+          echo "--- run under the sniffer ---"
+          LD_PRELOAD=$PWD/harness/sniff.so harness/nxrun input/libondevx.so input/k \
+              input/p input/cert.der payload.bin "0x1ea3c" 2>&1 | tail -30 || true
+          ls -l sniff-*.bin 2>/dev/null && for f in sniff-*.bin; do
+              echo "== $f =="; xxd -l 32 "$f"; done
 
           echo "=== gdb backtrace of nxrun ==="
           sudo apt-get install -y -qq gdb >/dev/null 2>&1 || true
