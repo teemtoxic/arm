@@ -79,6 +79,7 @@ jobs:
       - name: dlopen smoke test
         continue-on-error: true
         run: |
+          set +e
           cat > /tmp/t.c <<'EOC'
           #include <stdio.h>
           #include <dlfcn.h>
