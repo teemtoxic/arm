@@ -169,6 +169,37 @@ jobs:
           echo "rc=$rc"
           echo "=== payload ==="
           ls -l payload.bin 2>/dev/null && xxd -l 64 payload.bin
+          echo "=== gdb: dump AES key/iv at first block ==="
+          cat > /tmp/g.gdb <<'EOC'
+          set pagination off
+          set confirm off
+          break nx_decrypt
+          run
+          break *($pc + 0x480)
+          continue
+          printf "--- key @sp+0x90 ---\n"
+          x/32xb $sp+0x90
+          printf "--- iv  @sp+0x120 ---\n"
+          x/16xb $sp+0x120
+          printf "--- plain ptr ---\n"
+          p/x $x20
+          EOC
+          gdb -batch -nx -x /tmp/g.gdb \
+              --args harness/nxrun input/libondevx.so input/k input/p \
+                     input/cert.der payload.bin "0x1ea3c" 2>&1 | tail -30 || true
+          echo "=== gdb: raw stack probe ==="
+          cat > /tmp/g2.gdb <<'EOC'
+          set pagination off
+          set confirm off
+          break *(nx_decrypt+0x480)
+          run
+          x/48xb $sp+0x90
+          x/16xb $sp+0x120
+          bt 3
+          EOC
+          gdb -batch -nx -x /tmp/g2.gdb \
+              --args harness/nxrun input/libondevx.so input/k input/p \
+                     input/cert.der payload.bin "0x1ea3c" 2>&1 | tail -30 || true
           echo "=== gdb backtrace of nxrun ==="
           sudo apt-get install -y -qq gdb >/dev/null 2>&1 || true
           gdb -batch -nx -ex run -ex "bt 20" -ex "info registers pc"               --args harness/nxrun input/libondevx.so input/k input/p                      input/cert.der payload.bin                      "${{ inputs.nx_offset || '0x1ea3c' }}" 2>&1 | tail -35 || true
