@@ -95,8 +95,17 @@ jobs:
           export LD_LIBRARY_PATH="$PWD/harness/shim"
           echo "== with shim =="
           /tmp/t input/libondevx.so; echo "rc=$?"
-          echo "== LD_DEBUG reloc/versions =="
-          LD_DEBUG=versions /tmp/t input/libondevx.so 2>&1 | tail -30
+          echo "== LD_DEBUG versions =="
+          LD_DEBUG=versions /tmp/t input/libondevx.so 2>&1 | tail -20 || true
+          echo "== LD_DEBUG symbols (resolved) =="
+          LD_DEBUG=symbols /tmp/t input/libondevx.so 2>&1 | grep -iE "error|fail|not found|unresolved" | head -20 || true
+          echo "== gdb backtrace =="
+          sudo apt-get install -y -qq gdb || true
+          gdb -batch -nx -ex "run" -ex "bt 25" -ex "info registers pc x0 x1 x2"               --args /tmp/t input/libondevx.so 2>&1 | tail -40 || true
+          echo "== gdb backtrace RTLD_LAZY =="
+          sed 's/RTLD_NOW/RTLD_LAZY/' /tmp/t.c > /tmp/tl.c
+          cc -O2 -o /tmp/tl /tmp/tl.c -ldl
+          gdb -batch -nx -ex "run" -ex "bt 25" --args /tmp/tl input/libondevx.so 2>&1 | tail -30 || true
         env:
           LD_LIBRARY_PATH: ${{ github.workspace }}/harness/shim
 
