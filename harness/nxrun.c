@@ -449,10 +449,14 @@ int main(int argc, char **argv) {
     unsigned long long off = 0x1ea3cULL;
     if (argc > 6) off = strtoull(argv[6], NULL, 0);
 
+    setvbuf(stderr, NULL, _IONBF, 0);
+    setvbuf(stdout, NULL, _IONBF, 0);
     build_jni();
+    fprintf(stderr, "== step 1: dlopen %s\n", libpath);
 
     void *h = dlopen(libpath, RTLD_NOW | RTLD_LOCAL);
     if (!h) { fprintf(stderr, "dlopen failed: %s\n", dlerror()); return 3; }
+    fprintf(stderr, "== step 2: dlopen OK, l_addr lookup...\n");
 
     /* find load base via link_map */
     struct link_map *lm = NULL;

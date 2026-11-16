@@ -91,14 +91,18 @@ char *__strcpy_chk(char *dst, const char *src, size_t dstlen) {
 }
 
 /* ---- bionic internals ---- */
-/* bionic exposes stdin/stdout/stderr as an array of FILE structs. Any code that
- * touches __sF[2] (stderr) just wants a writable FILE*. */
-static char sF_storage[3][512];
-void *__sF = sF_storage;
+/* bionic exposes stdin/stdout/stderr as an array of FILE objects (__sF[3]).
+ * glibc's FILE is a different size, so an array of structs would be wrong.
+ * Any code reaching into __sF is only ever grabbing stderr to print to, so we
+ * expose a pointer table and give back the real glibc streams. */
+void *__sF[3];
+__attribute__((constructor)) static void init_sF(void) {
+    __sF[0] = stdin;
+    __sF[1] = stdout;
+    __sF[2] = stderr;
+}
 
 int __system_property_get(const char *name, char *value) {
-    /* Every anti-tamper probe goes through here: ro.build.tags, ro.debuggable,
-     * ro.secure, ro.product.model, etc. Return "clean device" values. */
     if (!name || !value) return 0;
     const char *v = "";
     if      (!strcmp(name, "ro.build.tags"))            v = "release-keys";

@@ -76,6 +76,30 @@ jobs:
           cc -O2 -g -Wall -o harness/nxrun harness/nxrun.c -ldl
           file harness/nxrun
 
+      - name: dlopen smoke test
+        continue-on-error: true
+        run: |
+          cat > /tmp/t.c <<'EOC'
+          #include <stdio.h>
+          #include <dlfcn.h>
+          int main(int c, char**v){
+            setvbuf(stderr,NULL,_IONBF,0);
+            fprintf(stderr,"before dlopen\n");
+            void *h = dlopen(v[1], RTLD_NOW|RTLD_LOCAL);
+            if(!h){ fprintf(stderr,"FAIL: %s\n", dlerror()); return 1; }
+            fprintf(stderr,"dlopen OK\n");
+            return 0;
+          }
+          EOC
+          cc -O2 -o /tmp/t /tmp/t.c -ldl
+          export LD_LIBRARY_PATH="$PWD/harness/shim"
+          echo "== with shim =="
+          /tmp/t input/libondevx.so; echo "rc=$?"
+          echo "== LD_DEBUG reloc/versions =="
+          LD_DEBUG=versions /tmp/t input/libondevx.so 2>&1 | tail -30
+        env:
+          LD_LIBRARY_PATH: ${{ github.workspace }}/harness/shim
+
       - name: Show recoverable symbols
         run: |
           nm -C --defined-only input/libondevx.so 2>/dev/null \
