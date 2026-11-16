@@ -48,30 +48,33 @@ jobs:
           echo "--- k ---";  xxd input/k
           echo "--- p head ---"; xxd -l 32 input/p
 
-      - name: Build liblog shim + harness
+      - name: Build shim + harness
         run: |
           set -e
-          # libondevx.so links against Android's liblog.so; Linux has none.
-          # Provide a stub so dlopen() succeeds.
-          cat > harness/logshim.c <<'EOC'
-          #include <stdarg.h>
-          #include <stdio.h>
-          int __android_log_print(int prio, const char *tag, const char *fmt, ...) {
-              va_list ap; va_start(ap, fmt);
-              fprintf(stderr, "[log] %s: ", tag ? tag : "?");
-              vfprintf(stderr, fmt, ap); fputc('\n', stderr);
-              va_end(ap); return 0;
-          }
-          int __android_log_write(int prio, const char *tag, const char *msg) {
-              fprintf(stderr, "[log] %s: %s\n", tag ? tag : "?", msg ? msg : ""); return 0;
-          }
-          int __android_log_vprint(int prio, const char *tag, const char *fmt, va_list ap) { return 0; }
-          int __android_log_assert(const char *cond, const char *tag, const char *fmt, ...) { return 0; }
-          EOC
-          cc -shared -fPIC -o harness/liblog.so harness/logshim.c
-          # Also expose it as libdl.so / libm.so are real on Linux — nothing to do.
+          # libondevx.so NEEDs liblog.so libm.so libdl.so libc.so.
+          # On Ubuntu, libm.so / libdl.so / libc.so in /lib/aarch64-linux-gnu
+          # are GNU ld *linker scripts* (ASCII), not ELF -> dlopen says
+          #   "invalid ELF header"
+          # so we point the bare sonames at the real objects.
+          mkdir -p harness/shim
+          resolve() { ldconfig -p | awk -v w="$1" '$1==w {print $NF; exit}'; }
+          for pair in "libm.so:libm.so.6" "libdl.so:libdl.so.2" "libc.so:libc.so.6"; do
+            dst=${pair%%:*}; src=${pair##*:}
+            real=$(resolve "$src")
+            echo "$dst -> $real"
+            ln -sf "$real" "harness/shim/$dst"
+          done
+          # liblog.so does not exist on Linux at all: build our own with the
+          # bionic symbols the lib imports.
+          cc -shared -fPIC -O2 -o harness/shim/liblog.so harness/shim.c
+          echo "--- shim dir ---"
+          ls -l harness/shim/
+          for f in harness/shim/liblog.so; do file "$f"; done
+          echo "--- exported shim symbols ---"
+          nm -D --defined-only harness/shim/liblog.so | awk '{print $3}' | grep -v '^$' | sort
+          # the caller
           cc -O2 -g -Wall -o harness/nxrun harness/nxrun.c -ldl
-          file harness/nxrun harness/liblog.so
+          file harness/nxrun
 
       - name: Show recoverable symbols
         run: |
@@ -83,7 +86,7 @@ jobs:
         continue-on-error: true
         run: |
           set +e
-          export LD_LIBRARY_PATH="$PWD/harness:$LD_LIBRARY_PATH"
+          export LD_LIBRARY_PATH="$PWD/harness/shim:$LD_LIBRARY_PATH"
           harness/nxrun \
             input/libondevx.so \
             input/k \
