@@ -169,7 +169,8 @@ jobs:
           echo "rc=$rc"
           echo "=== payload ==="
           ls -l payload.bin 2>/dev/null && xxd -l 64 payload.bin
-          echo "=== gdb: break at nx_decrypt+0x480 via link_map ==="
+          echo "=== gdb: dump AES state from nx_decrypt+0x480 ==="
+          NXRUN_TRAP=1 true
           cat > /tmp/g3.gdb <<'EOC'
           set pagination off
           set confirm off
@@ -177,31 +178,27 @@ jobs:
           run
           python
           import gdb
-          # the trap fires inside main() right before fn() is called, so
-          # nx_decrypt is in scope: read it from the current frame's locals.
-          try:
-              fn = int(gdb.parse_and_eval("fn"))
-          except Exception:
-              fn = 0
-          print("nx_decrypt = 0x%x" % fn)
-          if fn:
-              bp = fn + 0x480
-              gdb.execute("break *0x%x" % bp)
-              gdb.execute("delete 1")
-              gdb.execute("continue")
-              sp = int(gdb.parse_and_eval("$sp"))
-              print("hit 0x%x  sp=0x%x" % (bp, sp))
-              inf = gdb.selected_inferior()
-              for name, off, ln in (("key?", 0x90, 32), ("iv?", 0x120, 16),
-                                    ("cand0", 0x100, 32), ("cand1", 0x110, 32),
-                                    ("cand2", 0x130, 48)):
+          fn, base = [int(x, 16) for x in open("nxaddr.txt").read().split()]
+          print("trap: nx_decrypt=0x%x base=0x%x" % (fn, base))
+          gdb.execute("delete")
+          gdb.execute("break *0x%x" % (fn + 0x480))
+          gdb.execute("continue")
+          sp = int(gdb.parse_and_eval("$sp"))
+          print("hit nx_decrypt+0x480, sp=0x%x" % sp)
+          inf = gdb.selected_inferior()
+          for name, off, ln in (("sp90", 0x90, 48), ("sp120", 0x120, 32),
+                                ("sp100", 0x100, 32), ("sp130", 0x130, 48),
+                                ("sp0b8", 0xb8, 32), ("sp50", 0x50, 32)):
+              try:
                   b = bytes(inf.read_memory(sp + off, ln))
-                  print("  sp+0x%03x %s = %s" % (off, name, b.hex()))
+                  print("  sp+0x%03x = %s" % (off, b.hex()))
+              except Exception as e:
+                  print("  sp+0x%03x unreadable (%s)" % (off, e))
           end
           EOC
-          gdb -batch -nx -x /tmp/g3.gdb \
+          NXRUN_TRAP=1 gdb -batch -nx -x /tmp/g3.gdb \
               --args harness/nxrun input/libondevx.so input/k input/p \
-                     input/cert.der payload.bin "0x1ea3c" 2>&1 | tail -30 || true
+                     input/cert.der payload.bin "0x1ea3c" 2>&1 | tail -25 || true
 
           echo "=== gdb backtrace of nxrun ==="
           sudo apt-get install -y -qq gdb >/dev/null 2>&1 || true

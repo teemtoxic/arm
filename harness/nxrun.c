@@ -532,10 +532,13 @@ int main(int argc, char **argv) {
     /* ------------------------------------------------------------------ */
 
     if (getenv("NXRUN_TRAP")) {
-        volatile int *zero = (volatile int *)0;
-        fprintf(stderr, "NXRUN_TRAP: nx_decrypt=%p base=%p (pid %d)\n",
-                (void *)fn, (void *)base, (int)getpid());
-        *zero = 1;   /* SIGSEGV -> gdb stops here with the stack live */
+        FILE *tf = fopen("nxaddr.txt", "w");
+        if (tf) {
+            fprintf(tf, "%p %p\n", (void *)fn, (void *)base);
+            fclose(tf);
+        }
+        fprintf(stderr, "NXRUN_TRAP: nx_decrypt=%p base=%p\n", (void *)fn, (void *)base);
+        *(volatile int *)0 = 1;   /* SIGSEGV with the stack live */
     }
     fprintf(stderr, "calling nx_decrypt...\n");
     /* DWARF from the arm64 build:
