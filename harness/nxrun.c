@@ -350,17 +350,24 @@ static jobject f_NewDirectByteBuffer(JNIEnv *e, void *addr, jlong cap) {
 
 static jint f_GetVersion(JNIEnv *e) { return 0x00010008; }
 
-static struct JNINativeInterface_ g_jni;
+static struct JNINativeInterface_ g_vtab;
+
+/* C++ JNIEnv is a *pointer* to a struct whose first member is the vtable
+ * pointer. Passing &vtab directly makes env->functions dereference the first
+ * function pointer (GetVersion) instead of the table. */
+struct JNIEnvWrapper { const struct JNINativeInterface_ *functions; };
+static struct JNIEnvWrapper g_env;
 
 static void build_jni(void) {
-    memset(&g_jni, 0, sizeof(g_jni));
-    g_jni.GetVersion = f_GetVersion;
-    g_jni.FindClass = f_FindClass;
-    g_jni.GetArrayLength = f_GetArrayLength;
-    g_jni.NewObjectArray = f_NewObjectArray;
-    g_jni.SetObjectArrayElement = f_SetObjectArrayElement;
-    g_jni.GetByteArrayRegion = f_GetByteArrayRegion;
-    g_jni.NewDirectByteBuffer = f_NewDirectByteBuffer;
+    memset(&g_vtab, 0, sizeof(g_vtab));
+    g_env.functions = &g_vtab;
+    g_vtab.GetVersion = f_GetVersion;
+    g_vtab.FindClass = f_FindClass;
+    g_vtab.GetArrayLength = f_GetArrayLength;
+    g_vtab.NewObjectArray = f_NewObjectArray;
+    g_vtab.SetObjectArrayElement = f_SetObjectArrayElement;
+    g_vtab.GetByteArrayRegion = f_GetByteArrayRegion;
+    g_vtab.NewDirectByteBuffer = f_NewDirectByteBuffer;
 }
 
 /* ================= helpers ================= */
@@ -488,8 +495,11 @@ int main(int argc, char **argv) {
     FakeObj *ac = obj_new(3); ac->data = h2; ac->len = 32;
 
     fprintf(stderr, "calling nx_decrypt...\n");
-    /* signature: nx_decrypt(JNIEnv*, jclass, byte[] k, byte[] certHash, byte[] p) */
-    jobjectArray ret = fn(&g_jni, (jclass)0, (jbyteArray)ak, (jbyteArray)ac, (jbyteArray)ap);
+    /* DWARF from the arm64 build:
+     *   nx_decrypt(env, clazz, kBlob, pCipher, certHash)
+     *   ondevx.cpp:379
+     */
+    jobjectArray ret = fn(&g_env, (jclass)0, (jbyteArray)ak, (jbyteArray)ap, (jbyteArray)ac);
     fprintf(stderr, "nx_decrypt returned %p\n", (void*)ret);
     if (!ret) { fprintf(stderr, "NULL — decrypt rejected (wrong cert hash or key)\n"); return 5; }
 
