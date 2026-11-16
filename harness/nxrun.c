@@ -546,18 +546,6 @@ int main(int argc, char **argv) {
      *   ondevx.cpp:379
      */
     jobjectArray ret = fn(&g_env, (jclass)0, (jbyteArray)ak, (jbyteArray)ap, (jbyteArray)ac);
-    if (!ret) {
-        /* the patched build returns (jobjectArray)plain.begin with the length
-           smuggled out-of-band: we recorded it from the last free() skip. */
-        extern size_t g_plain_len;
-        extern void  *g_plain_ptr;
-        if (g_plain_ptr && g_plain_len) {
-            FILE *pf = fopen(outpath, "wb");
-            if (pf) { fwrite(g_plain_ptr, 1, g_plain_len, pf); fclose(pf); }
-            fprintf(stderr, "raw plaintext: %zu bytes from %p -> %s\n",
-                    g_plain_len, g_plain_ptr, outpath);
-        }
-    }
     fprintf(stderr, "nx_decrypt returned %p\n", (void*)ret);
     if (!ret) { fprintf(stderr, "NULL — decrypt rejected (wrong cert hash or key)\n"); return 5; }
 
