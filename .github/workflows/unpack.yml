@@ -169,47 +169,46 @@ jobs:
           echo "rc=$rc"
           echo "=== payload ==="
           ls -l payload.bin 2>/dev/null && xxd -l 64 payload.bin
-          echo "=== gdb: dump the plaintext right after the decrypt loop ==="
-          cat > /tmp/g9.gdb <<'EOC'
+          echo "=== gdb: why does the plain vector throw? ==="
+          cat > /tmp/ga.gdb <<'EOC'
           set pagination off
           set confirm off
           handle SIGSEGV stop print nopass
+          handle SIGABRT stop print nopass
           run
           python
           import gdb
           fn, base = [int(x,16) for x in open("nxaddr.txt").read().split()]
           gdb.execute("delete")
-          gdb.execute("break *0x%x" % (fn + 0xa98))   # 0x1f4d4, after the loop
+          for name, delta in (("entry0x1edf8", 0x3bc), ("check0x1ee04", 0x3c8),
+                              ("loopend0x1f4d4", 0xa98)):
+              print("  bp %-16s -> 0x%x" % (name, fn + delta))
+              gdb.execute("break *0x%x" % (fn + delta))
           gdb.execute("continue")
-          sp  = int(gdb.parse_and_eval("$sp"))
           inf = gdb.selected_inferior()
-          def rd(a,n):
-              try: return bytes(inf.read_memory(a,n))
-              except Exception: return None
-          x10 = int(gdb.parse_and_eval("$x10"))
-          x20 = int(gdb.parse_and_eval("$x20"))
-          print("HIT  sp=0x%x  x20=0x%x  x10=0x%x" % (sp,x20,x10))
-          pb = rd(sp+0x100, 8); pe = rd(sp+0x108, 8)
-          beg = int.from_bytes(pb,'little') if pb else 0
-          end = int.from_bytes(pe,'little') if pe else 0
-          print("plain.begin=0x%x plain.end=0x%x len=%d" % (beg,end,end-beg))
-          if 0 < end-beg < 64*1024*1024:
-              data = rd(beg, end-beg)
-              if data:
-                  open("payload.bin","wb").write(data)
-                  print("WROTE payload.bin %d bytes" % len(data))
-                  print("head:", data[:64].hex())
-                  print("text:", data[:24])
-          for label,a in (("x20",x20),("x10-64",x10-64)):
-              b = rd(a,64)
-              if b: print("  %-8s @0x%x = %s | %r" % (label,a,b.hex(),b[:16]))
+          pc = int(gdb.parse_and_eval("$pc"))
+          print("HIT pc=0x%x (offset +0x%x)" % (pc, pc - fn))
+          for r in ("x20","x21","x24","x25","x8","x9","x1","x2"):
+              v = int(gdb.parse_and_eval("$"+r))
+              print("   %-4s = 0x%x  (%d)" % (r, v, v if v < 2**63 else v - 2**64))
+          sp = int(gdb.parse_and_eval("$sp"))
+          try:
+              b = bytes(inf.read_memory(sp+0x50, 0x30))
+              print("   sp+0x50 = %s" % b.hex())
+          except Exception: pass
+          # keep going a couple more times to see the sequence
+          for extra in range(3):
+              gdb.execute("continue")
+              pc = int(gdb.parse_and_eval("$pc"))
+              print("NEXT pc=0x%x (offset +0x%x)  w24=0x%x x25=0x%x" % (
+                  pc, pc - fn,
+                  int(gdb.parse_and_eval("$x24")) & 0xffffffff,
+                  int(gdb.parse_and_eval("$x25"))))
           end
           EOC
-          NXRUN_TRAP=1 gdb -batch -nx -x /tmp/g9.gdb \
+          NXRUN_TRAP=1 gdb -batch -nx -x /tmp/ga.gdb \
               --args harness/nxrun input/libondevx.so input/k input/p \
-                     input/cert.der payload.bin "0x1ea3c" 2>&1 | tail -20 || true
-          echo "--- payload.bin ---"
-          ls -l payload.bin 2>/dev/null && xxd -l 64 payload.bin
+                     input/cert.der payload.bin "0x1ea3c" 2>&1 | tail -35 || true
 
           echo "=== gdb backtrace of nxrun ==="
           sudo apt-get install -y -qq gdb >/dev/null 2>&1 || true
