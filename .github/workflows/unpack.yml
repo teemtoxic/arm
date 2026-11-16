@@ -133,6 +133,9 @@ jobs:
           echo "rc=$rc"
           echo "=== payload ==="
           ls -l payload.bin 2>/dev/null && xxd -l 64 payload.bin
+          echo "=== gdb backtrace of nxrun ==="
+          sudo apt-get install -y -qq gdb >/dev/null 2>&1 || true
+          gdb -batch -nx -ex run -ex "bt 20" -ex "info registers pc"               --args harness/nxrun input/libondevx.so input/k input/p                      input/CERT.RSA payload.bin                      "${{ inputs.nx_offset || '0x1ea3c' }}" 2>&1 | tail -35 || true
           exit $rc
 
       - name: Carve DEX
