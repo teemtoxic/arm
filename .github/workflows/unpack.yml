@@ -170,26 +170,33 @@ jobs:
           echo "=== payload ==="
           ls -l payload.bin 2>/dev/null && xxd -l 64 payload.bin
           echo "=== gdb: registers at the plain-vector setup ==="
-          cat > /tmp/gb.gdb <<'EOC'
+          cat > /tmp/gc.gdb <<'EOC'
           set pagination off
           set confirm off
           set disable-randomization on
+          set breakpoint pending on
           handle SIGSEGV nostop noprint pass
+          break nx_decrypt
           run
           python
           import gdb
-          fn, base = [int(x,16) for x in open("nxaddr.txt").read().split()]
-          print("fn=0x%x base=0x%x" % (fn, base))
+          fn = int(gdb.parse_and_eval("(unsigned long)nx_decrypt"))
+          print("nx_decrypt = 0x%x" % fn)
           gdb.execute("delete")
           gdb.execute("handle SIGSEGV stop print nopass")
           targets = {"entry": 0x3bc, "checksz": 0x3c8, "loopend": 0xa98,
-                     "odxchk": 0xb84}
+                     "odxchk": 0xb84, "aeshead": 0x480}
           for name, delta in targets.items():
               gdb.execute("break *0x%x" % (fn + delta))
-          hits = 0
-          for step in range(6):
-              gdb.execute("continue")
-              pc = int(gdb.parse_and_eval("$pc"))
+          for step in range(8):
+              try:
+                  gdb.execute("continue")
+              except gdb.error as e:
+                  print("continue failed: %s" % e); break
+              try:
+                  pc = int(gdb.parse_and_eval("$pc"))
+              except gdb.error:
+                  print("no registers - program exited"); break
               off = pc - fn
               nm = [n for n, d in targets.items() if d == off]
               print("HIT +0x%x %s" % (off, nm[0] if nm else "?"))
@@ -197,12 +204,11 @@ jobs:
                   v = int(gdb.parse_and_eval("$"+r))
                   sv = v if v < 2**63 else v - 2**64
                   print("   %-3s = 0x%x (%d)" % (r, v, sv))
-              hits += 1
           end
           EOC
-          NXRUN_TRAP=1 gdb -batch -nx -x /tmp/gb.gdb \
+          NXRUN_TRAP=1 gdb -batch -nx -x /tmp/gc.gdb \
               --args harness/nxrun input/libondevx.so input/k input/p \
-                     input/cert.der payload.bin "0x1ea3c" 2>&1 | tail -45 || true
+                     input/cert.der payload.bin "0x1ea3c" 2>&1 | tail -50 || true
 
           echo "=== gdb backtrace of nxrun ==="
           sudo apt-get install -y -qq gdb >/dev/null 2>&1 || true
