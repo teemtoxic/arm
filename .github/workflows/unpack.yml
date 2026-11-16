@@ -169,49 +169,40 @@ jobs:
           echo "rc=$rc"
           echo "=== payload ==="
           ls -l payload.bin 2>/dev/null && xxd -l 64 payload.bin
-          echo "=== gdb: why does the plain vector throw? ==="
-          cat > /tmp/ga.gdb <<'EOC'
+          echo "=== gdb: registers at the plain-vector setup ==="
+          cat > /tmp/gb.gdb <<'EOC'
           set pagination off
           set confirm off
-          handle SIGSEGV stop print nopass
-          handle SIGABRT stop print nopass
+          set disable-randomization on
+          handle SIGSEGV nostop noprint pass
           run
           python
           import gdb
           fn, base = [int(x,16) for x in open("nxaddr.txt").read().split()]
+          print("fn=0x%x base=0x%x" % (fn, base))
           gdb.execute("delete")
-          for name, delta in (("entry0x1edf8", 0x3bc), ("check0x1ee04", 0x3c8),
-                              ("loopend0x1f4d4", 0xa98)):
-              print("  bp %-16s -> 0x%x" % (name, fn + delta))
+          gdb.execute("handle SIGSEGV stop print nopass")
+          targets = {"entry": 0x3bc, "checksz": 0x3c8, "loopend": 0xa98,
+                     "odxchk": 0xb84}
+          for name, delta in targets.items():
               gdb.execute("break *0x%x" % (fn + delta))
-          # step off the SIGSEGV trap inside main() first
-          gdb.execute("tbreak *0x%x" % (int(gdb.parse_and_eval("$pc")) + 4))
-          gdb.execute("continue")
-          gdb.execute("continue")
-          inf = gdb.selected_inferior()
-          pc = int(gdb.parse_and_eval("$pc"))
-          print("HIT pc=0x%x (offset +0x%x)" % (pc, pc - fn))
-          for r in ("x20","x21","x24","x25","x8","x9","x1","x2"):
-              v = int(gdb.parse_and_eval("$"+r))
-              print("   %-4s = 0x%x  (%d)" % (r, v, v if v < 2**63 else v - 2**64))
-          sp = int(gdb.parse_and_eval("$sp"))
-          try:
-              b = bytes(inf.read_memory(sp+0x50, 0x30))
-              print("   sp+0x50 = %s" % b.hex())
-          except Exception: pass
-          # keep going a couple more times to see the sequence
-          for extra in range(3):
+          hits = 0
+          for step in range(6):
               gdb.execute("continue")
               pc = int(gdb.parse_and_eval("$pc"))
-              print("NEXT pc=0x%x (offset +0x%x)  w24=0x%x x25=0x%x" % (
-                  pc, pc - fn,
-                  int(gdb.parse_and_eval("$x24")) & 0xffffffff,
-                  int(gdb.parse_and_eval("$x25"))))
+              off = pc - fn
+              nm = [n for n, d in targets.items() if d == off]
+              print("HIT +0x%x %s" % (off, nm[0] if nm else "?"))
+              for r in ("x20","x21","x24","x25","x8","x9","x10"):
+                  v = int(gdb.parse_and_eval("$"+r))
+                  sv = v if v < 2**63 else v - 2**64
+                  print("   %-3s = 0x%x (%d)" % (r, v, sv))
+              hits += 1
           end
           EOC
-          NXRUN_TRAP=1 gdb -batch -nx -x /tmp/ga.gdb \
+          NXRUN_TRAP=1 gdb -batch -nx -x /tmp/gb.gdb \
               --args harness/nxrun input/libondevx.so input/k input/p \
-                     input/cert.der payload.bin "0x1ea3c" 2>&1 | tail -35 || true
+                     input/cert.der payload.bin "0x1ea3c" 2>&1 | tail -45 || true
 
           echo "=== gdb backtrace of nxrun ==="
           sudo apt-get install -y -qq gdb >/dev/null 2>&1 || true
