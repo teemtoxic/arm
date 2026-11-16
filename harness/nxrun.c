@@ -497,6 +497,40 @@ int main(int argc, char **argv) {
     FakeObj *ap = obj_new(2); ap->data = pb; ap->len = plen;
     FakeObj *ac = obj_new(3); ac->data = h2; ac->len = 32;
 
+    /* ---- direct hkdf probe ------------------------------------------
+     * hkdf(saltPtr, ikmPtr, ikmLen, outPtr)  @ 0x20488
+     *   saltLen is hardcoded to 16 inside; info = "ondev-dexkey-v2" (15 B);
+     *   outLen = 0x30 (48) => key[32] || iv[16].
+     * Call site 0x1ed8c: salt = k+5, ikm = secret vector, out = stack buf.
+     */
+    {
+        typedef void (*hkdf_t)(const uint8_t *, const uint8_t *, size_t, uint8_t *);
+        hkdf_t hk = (hkdf_t)(base + 0x20488);
+        static uint8_t ikm[64];
+        static const uint8_t c32[32] = {
+            0x69,0xec,0x6c,0xf5,0x99,0xf8,0xe3,0x68,0x8f,0x3c,0x6a,0xb8,0xb8,0xad,0x98,0x18,
+            0xf5,0xd1,0x4a,0x0d,0x4a,0x76,0x7d,0xf3,0x3f,0x69,0xbc,0xfe,0xea,0xd9,0xa3,0xef};
+        uint8_t ks[48];
+        size_t ikmlen = 32;
+        memcpy(ikm, c32, 32);
+        if (kb && klen >= 5 && kb[4] == 0x11) { memcpy(ikm + 32, h2, 32); ikmlen = 64; }
+        memset(ks, 0, sizeof ks);
+        fprintf(stderr, "== hkdf probe: kFlag=0x%02x ikmLen=%zu\n", kb ? kb[4] : 0, ikmlen);
+        fprintf(stderr, "   salt = ");
+        for (int i = 0; i < 16; i++) fprintf(stderr, "%02x", kb[5 + i]);
+        fprintf(stderr, "\n");
+        hk(kb + 5, ikm, ikmlen, ks);
+        fprintf(stderr, "   keystream48 = ");
+        for (int i = 0; i < 48; i++) fprintf(stderr, "%02x", ks[i]);
+        fprintf(stderr, "\n");
+        fprintf(stderr, "   key = ");
+        for (int i = 0; i < 32; i++) fprintf(stderr, "%02x", kb[21 + i] ^ ks[i]);
+        fprintf(stderr, "\n   iv  = ");
+        for (int i = 0; i < 16; i++) fprintf(stderr, "%02x", kb[53 + i] ^ ks[32 + i]);
+        fprintf(stderr, "\n");
+    }
+    /* ------------------------------------------------------------------ */
+
     fprintf(stderr, "calling nx_decrypt...\n");
     /* DWARF from the arm64 build:
      *   nx_decrypt(env, clazz, kBlob, pCipher, certHash)
