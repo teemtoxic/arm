@@ -169,37 +169,40 @@ jobs:
           echo "rc=$rc"
           echo "=== payload ==="
           ls -l payload.bin 2>/dev/null && xxd -l 64 payload.bin
-          echo "=== gdb: dump AES key/iv at first block ==="
-          cat > /tmp/g.gdb <<'EOC'
+          echo "=== gdb: break at nx_decrypt+0x480 via link_map ==="
+          cat > /tmp/g3.gdb <<'EOC'
           set pagination off
           set confirm off
-          break nx_decrypt
+          handle SIGSEGV stop print nopass
           run
-          break *($pc + 0x480)
-          continue
-          printf "--- key @sp+0x90 ---\n"
-          x/32xb $sp+0x90
-          printf "--- iv  @sp+0x120 ---\n"
-          x/16xb $sp+0x120
-          printf "--- plain ptr ---\n"
-          p/x $x20
+          python
+          import gdb
+          # the trap fires inside main() right before fn() is called, so
+          # nx_decrypt is in scope: read it from the current frame's locals.
+          try:
+              fn = int(gdb.parse_and_eval("fn"))
+          except Exception:
+              fn = 0
+          print("nx_decrypt = 0x%x" % fn)
+          if fn:
+              bp = fn + 0x480
+              gdb.execute("break *0x%x" % bp)
+              gdb.execute("delete 1")
+              gdb.execute("continue")
+              sp = int(gdb.parse_and_eval("$sp"))
+              print("hit 0x%x  sp=0x%x" % (bp, sp))
+              inf = gdb.selected_inferior()
+              for name, off, ln in (("key?", 0x90, 32), ("iv?", 0x120, 16),
+                                    ("cand0", 0x100, 32), ("cand1", 0x110, 32),
+                                    ("cand2", 0x130, 48)):
+                  b = bytes(inf.read_memory(sp + off, ln))
+                  print("  sp+0x%03x %s = %s" % (off, name, b.hex()))
+          end
           EOC
-          gdb -batch -nx -x /tmp/g.gdb \
+          gdb -batch -nx -x /tmp/g3.gdb \
               --args harness/nxrun input/libondevx.so input/k input/p \
                      input/cert.der payload.bin "0x1ea3c" 2>&1 | tail -30 || true
-          echo "=== gdb: raw stack probe ==="
-          cat > /tmp/g2.gdb <<'EOC'
-          set pagination off
-          set confirm off
-          break *(nx_decrypt+0x480)
-          run
-          x/48xb $sp+0x90
-          x/16xb $sp+0x120
-          bt 3
-          EOC
-          gdb -batch -nx -x /tmp/g2.gdb \
-              --args harness/nxrun input/libondevx.so input/k input/p \
-                     input/cert.der payload.bin "0x1ea3c" 2>&1 | tail -30 || true
+
           echo "=== gdb backtrace of nxrun ==="
           sudo apt-get install -y -qq gdb >/dev/null 2>&1 || true
           gdb -batch -nx -ex run -ex "bt 20" -ex "info registers pc"               --args harness/nxrun input/libondevx.so input/k input/p                      input/cert.der payload.bin                      "${{ inputs.nx_offset || '0x1ea3c' }}" 2>&1 | tail -35 || true
