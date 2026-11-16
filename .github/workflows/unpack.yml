@@ -110,6 +110,42 @@ jobs:
         env:
           LD_LIBRARY_PATH: ${{ github.workspace }}/harness/shim
 
+      - name: Extract X.509 cert from CERT.RSA
+        run: |
+          python3 - <<'PY'
+          import hashlib
+          d = open('input/CERT.RSA','rb').read()
+
+          def read_len(b, i):
+              n = b[i]; i += 1
+              if n < 0x80: return n, i
+              k = n & 0x7f
+              return int.from_bytes(b[i:i+k], 'big'), i + k
+
+          # CERT.RSA is PKCS#7 SignedData. Find every SEQUENCE that looks like
+          # an X.509 TBSCertificate: [0] version?, INTEGER serial, SEQUENCE alg
+          found = []
+          for a in range(len(d) - 4):
+              if d[a] != 0x30: continue
+              ln, j = read_len(d, a + 1)
+              if j + ln > len(d) or ln < 200: continue
+              k = j
+              if k < len(d) and d[k] == 0xa0:
+                  _, k = read_len(d, k + 1)
+              if k < len(d) and d[k] == 0x02:
+                  _, k = read_len(d, k + 1)
+              if k < len(d) and d[k] == 0x30:
+                  found.append((a, ln, j))
+          print('candidates:', [(hex(a), l) for a, l, _ in found])
+          a, ln, j = found[-1]
+          blob = d[a:j+ln]
+          print('picked offset', hex(a), 'len', len(blob))
+          open('input/cert.der','wb').write(blob)
+          print('sha256(cert.der) =', hashlib.sha256(blob).hexdigest())
+          PY
+          ls -l input/cert.der
+          xxd -l 32 input/cert.der
+
       - name: Show recoverable symbols
         run: |
           nm -C --defined-only input/libondevx.so 2>/dev/null \
@@ -125,7 +161,7 @@ jobs:
             input/libondevx.so \
             input/k \
             input/p \
-            input/CERT.RSA \
+            input/cert.der \
             payload.bin \
             "${{ inputs.nx_offset || '0x1ea3c' }}" \
             2>&1 | tee run.log
@@ -135,7 +171,7 @@ jobs:
           ls -l payload.bin 2>/dev/null && xxd -l 64 payload.bin
           echo "=== gdb backtrace of nxrun ==="
           sudo apt-get install -y -qq gdb >/dev/null 2>&1 || true
-          gdb -batch -nx -ex run -ex "bt 20" -ex "info registers pc"               --args harness/nxrun input/libondevx.so input/k input/p                      input/CERT.RSA payload.bin                      "${{ inputs.nx_offset || '0x1ea3c' }}" 2>&1 | tail -35 || true
+          gdb -batch -nx -ex run -ex "bt 20" -ex "info registers pc"               --args harness/nxrun input/libondevx.so input/k input/p                      input/cert.der payload.bin                      "${{ inputs.nx_offset || '0x1ea3c' }}" 2>&1 | tail -35 || true
           exit $rc
 
       - name: Carve DEX

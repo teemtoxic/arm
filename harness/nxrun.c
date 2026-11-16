@@ -479,14 +479,17 @@ int main(int argc, char **argv) {
     if (!kb || !pb) { fprintf(stderr, "input read failed\n"); return 4; }
     fprintf(stderr, "k=%zu p=%zu cert=%zu\n", klen, plen, clen);
 
-    /* certHash = sha256(sha256(certDER)) — per ShellAppFactoryV3.certSetHashFromApk */
-    uint8_t h1[32], h2[32];
+    /* ShellAppFactoryV3.certSetHashFromApk():
+     *   CertificateFactory X.509 -> generateCertificates(CERT.RSA)
+     *   for each cert: sha256(cert.getEncoded())      <- ONE hash only
+     * And getEncoded() is the raw X.509 DER, not the PKCS#7 container,
+     * so input/cert.der must be the extracted certificate (see workflow). */
+    uint8_t h2[32];
     SHA256 s;
     if (cb && clen) {
-        sha256_init(&s); sha256_update(&s, cb, clen); sha256_final(&s, h1);
-        sha256_init(&s); sha256_update(&s, h1, 32); sha256_final(&s, h2);
-        fprintf(stderr, "certHash(sha256^2) = ");
-        for (int i=0;i<32;i++) fprintf(stderr, "%02x", h2[i]);
+        sha256_init(&s); sha256_update(&s, cb, clen); sha256_final(&s, h2);
+        fprintf(stderr, "certHash = sha256(X.509 DER) = ");
+        for (int i = 0; i < 32; i++) fprintf(stderr, "%02x", h2[i]);
         fprintf(stderr, "\n");
     }
 
